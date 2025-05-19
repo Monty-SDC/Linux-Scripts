@@ -1,33 +1,35 @@
 #!/bin/bash
-# Credit - Grok, Modified by Bryan
+# Credit - Grok, Modified by Bryan - User-agnostic version
 
-# Exit on error
 set -e
 
 # Ensure script is run as root
 if [ "$EUID" -ne 0 ]; then
-  echo "Please run as root (e.g., sudo ./install.sh)"
+  echo "Please run as root (e.g., sudo ./openai.sh)"
   exit 1
 fi
 
-# Log file
 LOGFILE="/var/log/ollama-install.log"
 exec > >(tee -a "$LOGFILE") 2>&1
 echo "Starting post-install script on $(date)"
+
+# Get the calling (non-root) user
+REAL_USER=${SUDO_USER:-$(logname)}
+REAL_HOME=$(eval echo "~$REAL_USER")
+
+echo "Using user: $REAL_USER"
+echo "Using home directory: $REAL_HOME"
 
 # Update system
 echo "Updating system..."
 apt update && apt upgrade -y
 
-# Install NVIDIA drivers and CUDA
+# Install NVIDIA drivers
 echo "Installing NVIDIA drivers and CUDA..."
 apt install -y ubuntu-drivers-common
 ubuntu-drivers autoinstall
-
-# Optional: Install CUDA toolkit if needed
 apt install -y nvidia-cuda-toolkit
 
-# Verify NVIDIA driver
 echo "Verifying NVIDIA driver..."
 if ! command -v nvidia-smi &>/dev/null || ! nvidia-smi; then
   echo "ERROR: NVIDIA driver installation failed" >&2
@@ -38,9 +40,9 @@ fi
 echo "Installing Ollama..."
 curl -fsSL https://ollama.com/install.sh | sh
 
-# Create ollama system user if not exists
+# Create ollama user if not exists
 if ! id "ollama" &>/dev/null; then
-  echo "Creating 'ollama' user..."
+  echo "Creating 'ollama' system user..."
   useradd --system --no-create-home --group --shell /usr/sbin/nologin ollama
 fi
 
@@ -84,12 +86,12 @@ ollama pull phi3 || { echo "Failed to pull phi3"; exit 1; }
 # Install Open WebUI
 echo "Installing Open WebUI..."
 mkdir -p /opt/open-webui
-chown ubuntu:ubuntu /opt/open-webui
+chown "$REAL_USER:$REAL_USER" /opt/open-webui
 
-# Install Open WebUI in a virtual environment
-python3 -m venv /opt/open-webui
-/opt/open-webui/bin/pip install --upgrade pip
-/opt/open-webui/bin/pip install open-webui
+# Set up Python virtual environment
+sudo -u "$REAL_USER" python3 -m venv /opt/open-webui
+sudo -u "$REAL_USER" /opt/open-webui/bin/pip install --upgrade pip
+sudo -u "$REAL_USER" /opt/open-webui/bin/pip install open-webui
 
 # Create Open WebUI systemd service
 echo "Creating Open WebUI systemd service..."
@@ -100,9 +102,9 @@ After=network.target ollama.service
 
 [Service]
 ExecStart=/opt/open-webui/bin/open-webui serve
-WorkingDirectory=/home/ubuntu
-User=ubuntu
-Group=ubuntu
+WorkingDirectory=$REAL_HOME
+User=$REAL_USER
+Group=$REAL_USER
 Restart=always
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 
@@ -114,7 +116,7 @@ systemctl daemon-reload
 systemctl enable open-webui
 systemctl start open-webui
 
-# Configure UFW
+# Configure firewall
 echo "Configuring firewall..."
 apt install -y ufw
 ufw allow 8080/tcp
